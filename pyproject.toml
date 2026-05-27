@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slack-bridge-mcp"
+version = "0.1.0"
+description = "Configurable MCP server for Slack search, messaging, and local archive workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = ["mcp", "model-context-protocol", "slack", "archive", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+    "playwright>=1.48.0",
+    "pyarrow>=18.0.0",
+    "duckdb>=1.1.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+[project.scripts]
+slack-bridge-mcp = "slack_bridge_mcp.server:main_sync"
+slack-bridge-archive = "slack_bridge_mcp.archive.daemon:main"
+slack-bridge-watcher = "slack_bridge_mcp.watcher.daemon:main"
+slack-bridge-compact = "slack_bridge_mcp.archive.compact:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slack_bridge_mcp"]
+
+# --- Lint & format (ruff replaces flake8 + black + isort + pyupgrade) ---------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF", "SIM", "PTH"]
+ignore = [
+    "E501",    # line length — handled by formatter
+    "B008",    # function call in default arg — common in Tool(...) defs
+    "RUF001",  # ambiguous unicode in strings — we use × for multiplication intentionally
+    "RUF002",  # ambiguous unicode in docstrings — same
+    "PTH101",  # os.chmod is fine alongside open() flows; no need to convert to Path.chmod()
+    "PTH105",  # os.replace is fine for atomic rename; no need to use Path.replace()
+    "SIM105",  # try/except/pass is more obvious than contextlib.suppress for one-line cases
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+# --- Type checking (mypy in permissive mode — tighten over time) --------------
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

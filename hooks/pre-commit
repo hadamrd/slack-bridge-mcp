@@ -1,0 +1,29 @@
+#!/bin/bash
+# Pre-commit hook: ruff + ruff-format + mypy on the whole package.
+#
+# Install: ln -sf ../../hooks/pre-commit .git/hooks/pre-commit
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+if [ ! -d src/ ]; then
+    exit 0
+fi
+
+VENV=".venv/bin"
+if [ ! -x "$VENV/ruff" ] || [ ! -x "$VENV/mypy" ]; then
+    echo "pre-commit: .venv missing ruff or mypy."
+    echo "  fix: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"
+    exit 1
+fi
+
+# Whole-tree, not just staged files: types are non-local.
+"$VENV/ruff" check src/ || exit 1
+"$VENV/ruff" format --check src/ || {
+    echo "pre-commit: ruff format would change files."
+    echo "  fix: $VENV/ruff format src/"
+    exit 1
+}
+"$VENV/mypy" src/ || exit 1

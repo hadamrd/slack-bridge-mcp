@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.slack-bridge-compact</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PYTHON}}</string>
+    <string>-m</string>
+    <string>slack_bridge_mcp.archive.compact</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SLACK_BRIDGE_ENV_FILE</key>
+    <string>{{ENV_FILE}}</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>{{REPO_DIR}}</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>{{LOG_DIR}}/slack-bridge-compact.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG_DIR}}/slack-bridge-compact.err.log</string>
+</dict>
+</plist>
