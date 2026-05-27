@@ -42,9 +42,18 @@ def test_process_env_overrides_env_file(tmp_path, monkeypatch):
     assert config.settings().api_base == "https://from-env.slack.com/api/"
 
 
-def test_default_paths_are_under_generic_config_dir(monkeypatch):
-    monkeypatch.delenv("SLACK_BRIDGE_ENV_FILE", raising=False)
+def test_default_paths_are_under_generic_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLACK_BRIDGE_ENV_FILE", str(tmp_path / "missing.env"))
     monkeypatch.setenv("SLACK_BRIDGE_CONFIG_DIR", "/tmp/slack-bridge-config")
+    for key in (
+        "SLACK_BRIDGE_TOKEN_ENV_PATH",
+        "SLACK_BRIDGE_BROWSER_PROFILE_DIR",
+        "SLACK_BRIDGE_ARCHIVE_DB_PATH",
+        "SLACK_BRIDGE_COLD_ARCHIVE_DIR",
+        "SLACK_BRIDGE_USERS_CACHE_PATH",
+        "SLACK_BRIDGE_WATCHER_RULES_PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
     settings = config.settings()
 
