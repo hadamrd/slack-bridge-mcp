@@ -94,7 +94,7 @@ def compact(horizon_days: int = HOT_HORIZON_DAYS, dry_run: bool = False) -> dict
     ).fetchall()
     if not rows:
         log.info("nothing to compact (no messages older than %dd)", horizon_days)
-        return {"ok": True, "moved": 0, "groups": 0, **pre}
+        return {"ok": True, "dry_run": dry_run, "moved": 0, "groups": 0, **pre}
 
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     skipped_unparseable = 0
