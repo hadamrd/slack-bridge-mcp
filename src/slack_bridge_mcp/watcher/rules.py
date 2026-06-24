@@ -64,36 +64,70 @@ class _RuleState:
 class RulesEngine:
     """Loads + matches rules. Reloads automatically when the file mtime changes."""
 
-    def __init__(self) -> None:
+    def __init__(self, include_pets: bool = True) -> None:
         self.rules: list[dict[str, Any]] = []
         self.state: dict[str, _RuleState] = {}
-        self._mtime: float = 0.0
+        self._mtime: float = -1.0
+        self._pet_sig: float = -1.0
+        self.include_pets = include_pets
 
-    def maybe_reload(self) -> bool:
-        """Returns True if rules were reloaded."""
+    def _pet_signature(self) -> float:
+        if not self.include_pets:
+            return 0.0
+        try:
+            from ..pets import registry
+
+            return registry.signature()
+        except Exception:
+            return 0.0
+
+    def _load_legacy(self) -> list[dict[str, Any]]:
         if not RULES_PATH.exists():
-            if self.rules:
-                log.info("rules file deleted; clearing rules")
-                self.rules = []
-                self._mtime = 0
-                return True
-            return False
-        mtime = RULES_PATH.stat().st_mtime
-        if mtime == self._mtime:
-            return False
+            return []
         try:
             data = yaml.safe_load(RULES_PATH.read_text()) or []
         except yaml.YAMLError as e:
             log.error("rules YAML parse error: %s", e)
+            return []
+        return [r for r in data if r.get("enabled", True)]
+
+    def _load_pets(self) -> list[dict[str, Any]]:
+        if not self.include_pets:
+            return []
+        try:
+            from ..pets import registry
+
+            specs, errors = registry.load_specs(registry.bots_dir())
+            for e in errors:
+                log.error("pet spec error: %s", e)
+            return registry.compile_rules(specs)
+        except Exception as e:
+            log.exception("pet rule load failed: %s", e)
+            return []
+
+    def maybe_reload(self) -> bool:
+        """Returns True if rules were (re)loaded. Combines the legacy rules file
+        with compiled pet rules; reloads when either source changes."""
+        legacy_mtime = RULES_PATH.stat().st_mtime if RULES_PATH.exists() else 0.0
+        pet_sig = self._pet_signature()
+        if legacy_mtime == self._mtime and pet_sig == self._pet_sig:
             return False
-        self.rules = [r for r in data if r.get("enabled", True)]
-        # Initialise per-rule state for new rules
+
+        legacy = self._load_legacy()
+        pets = self._load_pets()
+        self.rules = [*legacy, *pets]
         for r in self.rules:
             n = r.get("name", "")
             if n not in self.state:
                 self.state[n] = _RuleState()
-        self._mtime = mtime
-        log.info("rules reloaded: %d active", len(self.rules))
+        self._mtime = legacy_mtime
+        self._pet_sig = pet_sig
+        log.info(
+            "rules reloaded: %d active (%d legacy + %d pets)",
+            len(self.rules),
+            len(legacy),
+            len(pets),
+        )
         return True
 
     def match(self, event: dict[str, Any]) -> list[dict[str, Any]]:

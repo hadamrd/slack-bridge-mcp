@@ -247,9 +247,9 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    rules = RulesEngine()
+    rules = RulesEngine()  # include_pets=True: merges pet specs with legacy rules
     rules.maybe_reload()
-    log.info("initial rules: %d active", len(rules.rules))
+    log.info("supervisor up — initial rules: %d active (legacy + pets)", len(rules.rules))
 
     try:
         asyncio.run(_ws_connect_loop(rules))

@@ -28,6 +28,8 @@ def run_actions(actions: list[dict[str, Any]], ctx: dict[str, Any]) -> list[dict
         try:
             if kind == "shell":
                 results.append(_shell(a))
+            elif kind == "pet":
+                results.append(_pet(a, ctx))
             elif kind == "webhook":
                 results.append(_webhook(a))
             elif kind == "post_back":
@@ -59,6 +61,26 @@ def _shell(action: dict[str, Any]) -> dict[str, Any]:
         "stdout": r.stdout.strip()[:500],
         "stderr": r.stderr.strip()[:500],
     }
+
+
+def _pet(action: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """Invoke a pet (headless claude agent) for the matched event.
+
+    The spec is loaded fresh each fire so dry_run / capability edits take
+    effect immediately without restarting the supervisor.
+    """
+    from ..pets import registry, runner
+
+    name = action.get("name")
+    if not name:
+        return {"kind": "pet", "ok": False, "error": "missing pet name"}
+    spec = registry.load_one(name)
+    if not spec:
+        return {"kind": "pet", "ok": False, "error": f"no such pet: {name}"}
+    if not spec.enabled:
+        return {"kind": "pet", "ok": True, "skipped": "disabled"}
+    result = runner.run(spec, ctx)
+    return {"kind": "pet", **result}
 
 
 def _webhook(action: dict[str, Any]) -> dict[str, Any]:

@@ -87,6 +87,8 @@ class Settings:
     watcher_log_path: Path
     archive_log_path: Path
     archive_compact_log_path: Path
+    bots_dir: Path
+    pets_log_dir: Path
 
 
 def settings() -> Settings:
@@ -122,6 +124,8 @@ def settings() -> Settings:
         archive_compact_log_path=path_env(
             "SLACK_BRIDGE_ARCHIVE_COMPACT_LOG_PATH", log_dir / "archive-compact.log"
         ),
+        bots_dir=path_env("SLACK_BRIDGE_BOTS_DIR", config_dir / "bots"),
+        pets_log_dir=path_env("SLACK_BRIDGE_PETS_LOG_DIR", log_dir / "pets"),
     )
 
 
