@@ -103,6 +103,12 @@ def _log_line(path: Path, msg: str) -> None:
         fh.write(f"[{iso}] {msg}\n")
 
 
+def builtin_tools(allowed: list[str]) -> list[str]:
+    """Built-in tool names among the grants: "Write(/x/**)" -> "Write", MCP tools excluded."""
+    names = [t.split("(", 1)[0] for t in allowed if not t.startswith("mcp__")]
+    return list(dict.fromkeys(names))
+
+
 def run(spec: BotSpec, ctx: dict[str, Any]) -> dict[str, Any]:
     """Run one pet invocation for a matched event. Synchronous (called in a worker thread)."""
     _ensure_dirs(spec)
@@ -118,10 +124,12 @@ def run(spec: BotSpec, ctx: dict[str, Any]) -> dict[str, Any]:
         "--mcp-config",
         str(cfg_path),
         "--strict-mcp-config",
+        # dontAsk denies every tool not in --allowedTools; --tools hides ungranted built-ins
         "--permission-mode",
-        "bypassPermissions",
+        "dontAsk",
     ]
     allowed = spec.allowed_tools()
+    cmd += ["--tools", ",".join(builtin_tools(allowed))]
     if allowed:
         cmd += ["--allowedTools", ",".join(allowed)]
     if spec.model:

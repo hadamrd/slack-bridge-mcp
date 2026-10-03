@@ -409,6 +409,8 @@ def _summarize(channel: str, thread_ts: str | None, timeout_s: int) -> dict[str,
     """Run Slack AI summarize for a thread or channel-unreads, return the result."""
     from ..browser import run_in_thread, summarize_via_ws_blocking
 
+    # an expired token is refreshed here, before the browser worker is taken
+    call("auth.test")
     return run_in_thread(summarize_via_ws_blocking, channel, thread_ts, timeout_s)
 
 

@@ -241,6 +241,13 @@ def horizon_oldest_ts() -> str | None:
     return str(rows[0]["m"])
 
 
+def horizon_newest_ts() -> str | None:
+    rows = query_via_duckdb(columns="MAX(ts) AS m", order_by="1", limit=1)
+    if not rows or rows[0].get("m") is None:
+        return None
+    return str(rows[0]["m"])
+
+
 def stats() -> dict[str, Any]:
     """Per-month and total cold-tier sizes + shard counts."""
     if not COLD_ROOT.exists():

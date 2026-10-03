@@ -10,6 +10,7 @@ API-level failures so dispatchers can convert them to user-friendly errors.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -22,6 +23,53 @@ UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+# Slack API-level errors that mean "your tokens are no longer valid". When we
+# see one of these we try a single headless token refresh (re-scrape xoxc +
+# cookies from the warm browser profile) and retry the call. This closes the
+# common failure mode: Slack rotates the cookie set server-side while the
+# browser profile session is still alive, so a headless re-scrape recovers
+# without any human. It CANNOT recover a fully-expired profile — that still
+# needs an interactive slack_login (SSO can't be completed headlessly).
+_AUTH_ERRORS = frozenset(
+    {"invalid_auth", "not_authed", "token_revoked", "token_expired", "invalid_session"}
+)
+
+# Serialize refresh attempts and throttle them: a burst of failing calls must
+# trigger at most one browser launch per cooldown window, and concurrent
+# callers should reuse the result of the in-flight refresh rather than each
+# spawning their own headless Chrome.
+_refresh_lock = threading.Lock()
+_last_refresh_at = 0.0
+_last_refresh_ok = False
+_REFRESH_COOLDOWN_S = 60.0
+
+
+def _try_auto_refresh() -> bool:
+    """Headless token refresh after an auth failure. Returns True if the env
+    now holds fresh, working tokens.
+
+    Throttled + serialized via `_refresh_lock`: within `_REFRESH_COOLDOWN_S`
+    of a prior attempt we return that attempt's result instead of launching a
+    second browser. A failed refresh (dead profile) is cached too, so a storm
+    of failing calls doesn't repeatedly open Chrome only to fail again.
+    """
+    global _last_refresh_at, _last_refresh_ok
+    with _refresh_lock:
+        now = time.monotonic()
+        if now - _last_refresh_at < _REFRESH_COOLDOWN_S:
+            return _last_refresh_ok
+        # Late import: avoids a module-load import cycle (tools.auth -> browser
+        # -> client). Safe at call time — client is fully initialized by now.
+        from .tools.auth import _refresh
+
+        try:
+            result = _refresh()
+        except Exception:
+            result = {"ok": False}
+        _last_refresh_at = time.monotonic()
+        _last_refresh_ok = bool(result.get("ok"))
+        return _last_refresh_ok
 
 
 class SlackError(Exception):
@@ -76,23 +124,14 @@ def _tokens() -> tuple[str, str]:
     return xoxc, xoxd
 
 
-def call(method: str, **params: Any) -> dict[str, Any]:
-    """POST to slack.com/api/<method> with form-encoded params + xoxc auth.
-
-    Goes through the token-bucket rate limiter (`ratelimit.acquire`) before
-    sending — daemon polls, MCP tool calls, and backfill scans all share the
-    same per-method-class budget, so a backfill can't starve the user's
-    interactive tools (and vice versa).
-
-    Retries once on rate-limit (429 — penalises the bucket on the way back).
-    Other transport errors propagate as `SlackError`.
+def _post(method: str, env: dict[str, str], params: dict[str, Any]) -> dict[str, Any]:
+    """One rate-limited POST to slack.com/api/<method>. Returns the parsed
+    JSON payload as-is (it may carry ok=false). Retries once on 429; other
+    transport/HTTP errors raise SlackError.
     """
     from . import ratelimit
 
-    env = _read_env()
     xoxc = env.get("SLACK_MCP_XOXC_TOKEN") or ""
-    if not xoxc:
-        raise SlackError("xoxc missing from env — run slack_refresh_tokens")
     body = urllib.parse.urlencode(
         {"token": xoxc, **{k: v for k, v in params.items() if v is not None}}
     )
@@ -110,21 +149,61 @@ def call(method: str, **params: Any) -> dict[str, Any]:
             raise SlackError(f"{method}: rate-limit budget unavailable after 120s wait")
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read())
-            if not payload.get("ok"):
-                raise SlackError(f"{method}: {payload.get('error', 'unknown')} — {payload}")
-            return payload
+                return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 retry_after = int(e.headers.get("Retry-After", "5"))
+                # the bucket now refuses every caller until Retry-After has passed; the
+                # next acquire waits for it (or gives up past its 120s budget)
                 ratelimit.penalty_429(method, retry_after_s=retry_after)
                 if attempt == 0:
-                    time.sleep(min(retry_after, 30))
                     continue
             raise SlackError(f"{method}: HTTP {e.code} — {e.read()[:200]!r}") from e
         except urllib.error.URLError as e:
             raise SlackError(f"{method}: transport — {e}") from e
     raise SlackError(f"{method}: rate-limited twice")
+
+
+def call(method: str, **params: Any) -> dict[str, Any]:
+    """POST to slack.com/api/<method> with form-encoded params + xoxc auth.
+
+    Goes through the token-bucket rate limiter (`ratelimit.acquire`) before
+    sending — daemon polls, MCP tool calls, and backfill scans all share the
+    same per-method-class budget, so a backfill can't starve the user's
+    interactive tools (and vice versa).
+
+    Retries once on rate-limit (429 — handled in `_post`). On an auth-level
+    error (`invalid_auth` etc.) it attempts one headless token refresh and
+    retries — recovering transparently when Slack has rotated the cookie set
+    but the browser profile is still logged in. If the refresh can't produce
+    working tokens, raises SlackError pointing at slack_login.
+    """
+    for auth_attempt in range(2):
+        env = _read_env()
+        xoxc = env.get("SLACK_MCP_XOXC_TOKEN") or ""
+        if not xoxc:
+            if auth_attempt == 0 and _try_auto_refresh():
+                continue
+            raise SlackError(
+                "xoxc missing from env — run slack_refresh_tokens "
+                "(or slack_login if the session expired)"
+            )
+
+        payload = _post(method, env, params)
+        if payload.get("ok"):
+            return payload
+
+        err = payload.get("error", "unknown")
+        if err in _AUTH_ERRORS and auth_attempt == 0 and _try_auto_refresh():
+            continue  # retry once with freshly-scraped tokens
+        if err in _AUTH_ERRORS:
+            raise SlackError(
+                f"{method}: {err} — token refresh could not recover the session; "
+                f"run slack_login to complete SSO. ({payload})"
+            )
+        raise SlackError(f"{method}: {err} — {payload}")
+
+    raise SlackError(f"{method}: authentication failed after refresh — run slack_login")
 
 
 def fetch_url(url: str, *, max_bytes: int | None = None) -> tuple[bytes, dict[str, str]]:

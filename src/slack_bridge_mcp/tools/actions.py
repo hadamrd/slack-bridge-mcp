@@ -7,11 +7,13 @@ to call slack_refresh_tokens (and slack_login if the SSO session is dead).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from mcp.types import Tool
 
 from ..client import SlackError, call
+from ..rich_text import message_text, parse_alert, parse_alertmanager
 
 TOOLS: list[Tool] = [
     Tool(
@@ -91,7 +93,9 @@ TOOLS: list[Tool] = [
             "the channel ID (Cxxxxx / Gxxxxx) or a human name like "
             "'#pre-platform-alerts'. Default: 100 most recent messages, "
             "newest first. Returns ts, user, text, thread_ts, reply_count, "
-            "and reaction counts."
+            "and reaction counts. Bot cards (attachments/blocks) are flattened "
+            "into `text`; alert cards also get a parsed `alert` object. "
+            "For alert listings use slack_alerts."
         ),
         inputSchema={
             "type": "object",
@@ -108,6 +112,38 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["channel"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="slack_alerts",
+        description=(
+            "List alert cards (JSM ChatOps / Opsgenie 'Alert #N: name') posted in "
+            "one or more channels, parsed into fields: id, alertname (full, not "
+            "the 40-char tag), status, priority, severity, env, app, app_owner, "
+            "tags, description, runbook, grafana_rule, opsgenie_url, permalink. "
+            "Also returns counts per alertname. `status` is what the Slack card "
+            "shows and can be stale (JSM sometimes never updates the card); for the "
+            "real state use qualertify_list_alerts. Defaults to the PRE Platform alert "
+            "channels over the last 24h. `since`/`until` take a Slack ts, unix "
+            "seconds, or a relative age like '6h' / '7d'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "channels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Channel ids or '#names'. Default: PRE Platform alert channels.",
+                },
+                "since": {"type": "string", "default": "24h"},
+                "until": {"type": "string"},
+                "env": {"type": "string", "description": "Filter, e.g. 'prod' or 'preprod'."},
+                "app": {"type": "string", "description": "Filter on the app tag."},
+                "status": {"type": "string", "description": "Filter, e.g. 'Open', 'Acknowledged', 'Closed'."},
+                "alertname": {"type": "string", "description": "Case-insensitive substring filter."},
+                "max_messages": {"type": "integer", "default": 2000, "minimum": 1, "maximum": 10000},
+            },
             "additionalProperties": False,
         },
     ),
@@ -500,14 +536,18 @@ def _channel_history(
     channel: str, limit: int, oldest: str | None, latest: str | None
 ) -> dict[str, Any]:
     cid = _resolve_channel(channel)
-    data = call("conversations.history", channel=cid, limit=limit, oldest=oldest, latest=latest)
+    data = call(
+        "conversations.history", channel=cid, limit=limit, oldest=oldest, latest=latest,
+        inclusive=True,
+    )
     msgs = []
     for m in data.get("messages", []):
         msgs.append(
             {
                 "ts": m.get("ts"),
                 "user": m.get("user") or m.get("bot_id") or m.get("username"),
-                "text": m.get("text"),
+                "text": message_text(m),
+                "alert": parse_alert(m),
                 "thread_ts": m.get("thread_ts"),
                 "reply_count": m.get("reply_count"),
                 "reactions": [
@@ -539,7 +579,8 @@ def _search(query: str, count: int, sort: str) -> dict[str, Any]:
                 "channel": (m.get("channel") or {}).get("name"),
                 "channel_id": (m.get("channel") or {}).get("id"),
                 "user": m.get("username") or m.get("user"),
-                "text": m.get("text"),
+                "text": message_text(m),
+                "alert": parse_alert(m),
                 "permalink": m.get("permalink"),
             }
             for m in matches
@@ -547,8 +588,65 @@ def _search(query: str, count: int, sort: str) -> dict[str, Any]:
     }
 
 
+# Characters that read as AI-generated and don't match how we write in channels.
+_CHANNEL_STYLE_BANNED = {
+    "—": "em dash (—)",
+    "–": "en dash (–)",
+}
+
+
+def _check_channel_style(cid: str, text: str, thread_ts: str | None = None) -> None:
+    """Guard channel posts to the team writing style.
+
+    Applies only to channels (cid starting with C or G), never DMs (D).
+
+    Two registers, by context:
+    - Top-level post: open with a plain greeting line ("hello folks", no comma),
+      then one short simple phrase per line.
+    - Thread reply (has thread_ts): a continuation, usually an investigation
+      note. NO greeting. Be direct: lead with the key log/error, state the
+      likely cause cautiously ("maybe", "probably", "seems like"). No prose
+      scaffolding.
+
+    Both registers ban markdown headers and AI-fingerprint punctuation. Raises
+    SlackError listing the fixes so the caller reposts clean.
+    """
+    if not cid or cid[0] not in ("C", "G"):
+        return  # DMs and unknown targets are exempt
+    is_reply = bool(thread_ts)
+    lines = text.splitlines()
+    first = (lines[0].strip() if lines else "").lower()
+    problems: list[str] = []
+    if not is_reply:  # greeting only required on top-level posts, not thread replies
+        if not first.startswith("hello"):
+            problems.append('open with a greeting line, e.g. "hello folks"')
+        elif first.endswith(","):
+            problems.append("drop the comma after the greeting")
+    else:  # a greeting on a thread reply reads as noise — flag it
+        if first.startswith(("hello", "hi ", "hey", "hi,", "hey,")):
+            problems.append("drop the greeting on a thread reply; lead with the key log/error")
+    for ch, label in _CHANNEL_STYLE_BANNED.items():
+        if ch in text:
+            problems.append(f"remove the {label}; write plain simple lines")
+    if any(ln.lstrip().startswith("#") for ln in lines):
+        problems.append("no markdown headers (#); keep it plain")
+    if problems:
+        known = (
+            'first line a plain greeting ("hello folks", no comma), '
+            "then one short simple phrase per line, minimal tech detail."
+            if not is_reply
+            else "thread reply, so no greeting. Lead with the key log/error, "
+            'then state the likely cause cautiously ("maybe", "probably", '
+            '"seems like"). Plain lines, no scaffolding.'
+        )
+        raise SlackError(
+            "channel message style check failed: " + "; ".join(problems) + ". Known style: " + known
+        )
+
+
 def _post(channel: str, text: str, thread_ts: str | None) -> dict[str, Any]:
     cid = _resolve_channel(channel)
+    _check_channel_style(cid, text, thread_ts)
     data = call("chat.postMessage", channel=cid, text=text, thread_ts=thread_ts)
     return {"ok": True, "channel_id": cid, "ts": data.get("ts"), "permalink": data.get("permalink")}
 
@@ -661,6 +759,145 @@ def _delete_message(channel: str, ts: str) -> dict[str, Any]:
     return {"ok": True, "channel_id": cid, "ts": ts}
 
 
+DEFAULT_ALERT_CHANNELS = [
+    "#pre-platform-alerts",
+    "#pre-platform-preprod-alerts",
+    "#pre-platform-notifications",
+    "#pre-platform-debug",
+]
+
+
+def _to_ts(v: str | None) -> str | None:
+    """Slack ts / unix seconds / relative age ('90m', '6h', '7d') -> Slack ts."""
+    import time
+
+    if not v:
+        return None
+    v = v.strip()
+    m = re.fullmatch(r"(\d+)([mhd])", v)
+    if m:
+        secs = int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)]
+        return f"{time.time() - secs:.6f}"
+    return v
+
+
+def _am_env(p: dict[str, Any]) -> str | None:
+    """preprod/prod from the Grafana host in the post's src link, else from the channel name."""
+    m = re.search(r"grafana\.(preprod|prod)\.", p.get("grafana_rule") or "")
+    if m:
+        return m.group(1)
+    return "preprod" if "preprod" in p["channel"] else None
+
+
+def _alerts(args: dict[str, Any]) -> dict[str, Any]:
+    from .. import caches
+
+    channels = args.get("channels") or DEFAULT_ALERT_CHANNELS
+    oldest = _to_ts(args.get("since") or "24h")
+    latest = _to_ts(args.get("until"))
+    budget = int(args.get("max_messages", 2000))
+    want = {k: (args.get(k) or "").lower() for k in ("env", "app", "status", "alertname")}
+
+    alerts: list[dict[str, Any]] = []
+    am_posts: list[dict[str, Any]] = []
+    scanned: dict[str, Any] = {}
+    for ch in channels:
+        try:
+            cid = _resolve_channel(ch)
+        except SlackError as e:
+            scanned[ch] = {"error": str(e)}
+            continue
+        cursor, seen, truncated = None, 0, False
+        while True:
+            data = call(
+                "conversations.history", channel=cid, limit=200, oldest=oldest,
+                latest=latest, inclusive=True, cursor=cursor,
+            )
+            for m in data.get("messages", []):
+                seen += 1
+                a = parse_alert(m)
+                if not a:
+                    am = parse_alertmanager(m)
+                    if am:
+                        am.update(ts=m.get("ts"), channel=ch, permalink=(
+                            f"https://criteo.slack.com/archives/{cid}/p{m['ts'].replace('.', '')}"))
+                        am_posts.append(am)
+                    continue
+                a["ts"] = m.get("ts")
+                a["channel"] = ch
+                a["permalink"] = (
+                    f"https://criteo.slack.com/archives/{cid}/p{m['ts'].replace('.', '')}"
+                )
+                alerts.append(a)
+            cursor = (data.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                break
+            if seen >= budget:
+                truncated = True
+                break
+        scanned[ch] = {"channel_id": cid, "messages_scanned": seen, "truncated": truncated}
+
+    def keep(a: dict[str, Any]) -> bool:
+        if want["env"] and (a.get("env") or "").lower() != want["env"]:
+            return False
+        if want["app"] and (a.get("app") or "").lower() != want["app"]:
+            return False
+        if want["status"] and (a.get("status") or "").lower() != want["status"]:
+            return False
+        if want["alertname"] and want["alertname"] not in a["alertname"].lower():
+            return False
+        return True
+
+    # One entry per alert id: the card carries the fields, follow-up posts
+    # ("X acknowledged the alert") become its event history.
+    by_id: dict[int, dict[str, Any]] = {}
+    for a in sorted(alerts, key=lambda a: float(a["ts"])):
+        cur = by_id.setdefault(a["id"], {"id": a["id"], "alertname": a["alertname"], "events": []})
+        if a.get("kind") == "event":
+            text = re.sub(
+                r"<@(U[A-Z0-9]+)>",
+                lambda m: "@" + caches.label(caches.get_user(m.group(1))),
+                a.get("event") or "",
+            )
+            cur["events"].append({"ts": a["ts"], "text": text or None, "permalink": a["permalink"]})
+        else:
+            events = cur["events"]
+            cur.update({k: v for k, v in a.items() if k != "kind"})
+            cur["events"] = events
+    # Alertmanager posts have no id: one entry per (alertname, channel), newest state wins.
+    by_am: dict[tuple, dict[str, Any]] = {}
+    for p in sorted(am_posts, key=lambda p: float(p["ts"])):
+        key = (p["alertname"], p["channel"])
+        cur = by_am.setdefault(key, {"id": None, "alertname": p["alertname"], "kind": "am",
+                                     "channel": p["channel"], "events": [], "summary": p["summary"]})
+        cur["events"].append({"ts": p["ts"], "text": p["state"], "permalink": p["permalink"]})
+        cur.update(ts=p["ts"], status="Firing" if p["state"] == "firing" else "Resolved",
+                   permalink=p["permalink"], summary=p["summary"] or cur["summary"],
+                   env=_am_env(p) or cur.get("env"))
+        cur.update({k: p[k] for k in ("grafana_rule", "rule_uid", "runbook") if p.get(k)})
+    for v in by_am.values():
+        v["flaps"] = sum(1 for e in v["events"] if e["text"] == "firing")
+        by_id[f"am:{v['alertname']}:{v['channel']}"] = v
+    alerts = sorted(
+        filter(keep, by_id.values()),
+        key=lambda a: float(a.get("ts") or a["events"][0]["ts"]),
+        reverse=True,
+    )
+    counts: dict[str, int] = {}
+    for a in alerts:
+        key = f"{a['alertname']} [{a.get('env')}]"
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "ok": True,
+        "since": oldest,
+        "until": latest,
+        "channels": scanned,
+        "count": len(alerts),
+        "by_alertname": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+        "alerts": alerts,
+    }
+
+
 def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
     try:
         if name == "slack_my_channels":
@@ -675,6 +912,8 @@ def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
             return _channel_history(
                 args["channel"], int(args.get("limit", 100)), args.get("oldest"), args.get("latest")
             )
+        if name == "slack_alerts":
+            return _alerts(args)
         if name == "slack_search_messages":
             return _search(args["query"], int(args.get("count", 20)), args.get("sort", "timestamp"))
         if name == "slack_post_message":

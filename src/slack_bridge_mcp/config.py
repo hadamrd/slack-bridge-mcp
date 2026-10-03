@@ -59,6 +59,16 @@ def path_env(name: str, default: Path | str) -> Path:
     return Path(default).expanduser()
 
 
+def int_env(name: str, default: int) -> int:
+    value = env(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 def _origin(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme and parsed.netloc:
@@ -89,6 +99,10 @@ class Settings:
     archive_compact_log_path: Path
     bots_dir: Path
     pets_log_dir: Path
+    # Pet run scheduling — bound concurrency + dedupe flapping alerts.
+    pet_max_concurrency: int
+    pet_cooldown_s: int
+    pet_max_queue: int
 
 
 def settings() -> Settings:
@@ -126,6 +140,9 @@ def settings() -> Settings:
         ),
         bots_dir=path_env("SLACK_BRIDGE_BOTS_DIR", config_dir / "bots"),
         pets_log_dir=path_env("SLACK_BRIDGE_PETS_LOG_DIR", log_dir / "pets"),
+        pet_max_concurrency=int_env("SLACK_BRIDGE_PET_MAX_CONCURRENCY", 1),
+        pet_cooldown_s=int_env("SLACK_BRIDGE_PET_COOLDOWN_S", 600),
+        pet_max_queue=int_env("SLACK_BRIDGE_PET_MAX_QUEUE", 50),
     )
 
 

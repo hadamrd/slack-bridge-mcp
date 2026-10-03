@@ -15,6 +15,7 @@ that we don't need for a few-times-a-week token refresh.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
@@ -38,7 +39,12 @@ def run_in_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     `playwright.sync_api` checks for a running loop in the calling thread and
     refuses to start there. Submitting the work to our own thread pool gives
     Playwright a loop-free thread to live in.
+
+    A call made from the worker itself (a token refresh triggered inside a browser job) would
+    wait on its own thread forever, so it fails instead.
     """
+    if threading.current_thread().name.startswith("slack-pw"):
+        raise RuntimeError("browser job started from inside another browser job")
     return _executor.submit(fn, *args, **kwargs).result()
 
 

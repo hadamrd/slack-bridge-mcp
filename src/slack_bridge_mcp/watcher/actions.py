@@ -64,12 +64,15 @@ def _shell(action: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pet(action: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    """Invoke a pet (headless claude agent) for the matched event.
+    """Enqueue a pet (headless claude agent) for the matched event.
 
-    The spec is loaded fresh each fire so dry_run / capability edits take
-    effect immediately without restarting the supervisor.
+    The run is NOT executed inline — it's handed to the global pet scheduler,
+    which bounds concurrency (default 1), orders by priority, and dedupes
+    re-firing alerts. The scheduler reloads the spec fresh at run time so
+    dry_run / capability edits take effect without restarting the supervisor.
     """
-    from ..pets import registry, runner
+    from ..pets import registry
+    from ..pets.scheduler import event_priority, get_scheduler
 
     name = action.get("name")
     if not name:
@@ -79,8 +82,9 @@ def _pet(action: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "pet", "ok": False, "error": f"no such pet: {name}"}
     if not spec.enabled:
         return {"kind": "pet", "ok": True, "skipped": "disabled"}
-    result = runner.run(spec, ctx)
-    return {"kind": "pet", **result}
+    priority = event_priority(spec.priority, ctx.get("text", ""))
+    result = get_scheduler().enqueue(spec, ctx, priority)
+    return {"kind": "pet", "ok": True, **result}
 
 
 def _webhook(action: dict[str, Any]) -> dict[str, Any]:

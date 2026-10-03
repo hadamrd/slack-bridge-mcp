@@ -70,6 +70,7 @@ class RulesEngine:
         self._mtime: float = -1.0
         self._pet_sig: float = -1.0
         self.include_pets = include_pets
+        self.self_user_id: str | None = None  # set by the daemon from auth.test
 
     def _pet_signature(self) -> float:
         if not self.include_pets:
@@ -138,7 +139,7 @@ class RulesEngine:
         now = _t.time()
         matched: list[dict[str, Any]] = []
         for rule in self.rules:
-            if not _match_rule(rule, event):
+            if not _match_rule(rule, event, self.self_user_id):
                 continue
             # Rate limit
             cap = int(rule.get("rate_limit_per_min", 0) or 0)
@@ -156,12 +157,10 @@ class RulesEngine:
         return matched
 
 
-def _match_rule(rule: dict[str, Any], event: dict[str, Any]) -> bool:
+def _match_rule(rule: dict[str, Any], event: dict[str, Any], self_id: str | None = None) -> bool:
     m = rule.get("match", {}) or {}
-    if rule.get("ignore_self", True):
-        # Need user_id from somewhere — we'll inject it later in daemon when
-        # we know who the running user is. For now, never ignore here.
-        pass
+    if rule.get("ignore_self", True) and self_id and event.get("user") == self_id:
+        return False
     text = event.get("text") or ""
     if "channel_id" in m and event.get("channel") != m["channel_id"]:
         return False

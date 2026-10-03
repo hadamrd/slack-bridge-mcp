@@ -116,9 +116,55 @@ def _build_ws_url() -> str:
     return f"{base}/?{urllib.parse.urlencode(params)}"
 
 
+# Keys whose string values carry human-readable content inside Slack
+# attachments/blocks. Alert bots (Alertmanager, Grafana, …) post with an empty
+# top-level `text` and put the payload here — so we flatten these into `text`.
+_TEXT_KEYS = frozenset({"text", "fallback", "pretext", "title", "value"})
+
+
+def _collect_strings(obj: Any, out: list[str]) -> None:
+    """Recursively gather non-empty strings under `_TEXT_KEYS` from a nested
+    attachments/blocks structure."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in _TEXT_KEYS and isinstance(v, str) and v.strip():
+                out.append(v.strip())
+            else:
+                _collect_strings(v, out)
+    elif isinstance(obj, list):
+        for x in obj:
+            _collect_strings(x, out)
+
+
+def _flatten_text(event: dict[str, Any]) -> str:
+    """Combine top-level `text` with text carried in attachments/blocks.
+
+    Bot/alert messages leave `text` empty and put the real content in
+    attachments — without flattening, `text_contains`/`text_regex` rules never
+    match and a fired pet would receive a blank event. De-dups, preserves order.
+    """
+    parts: list[str] = []
+    base = event.get("text")
+    if isinstance(base, str) and base.strip():
+        parts.append(base.strip())
+    extra: list[str] = []
+    _collect_strings(event.get("attachments"), extra)
+    _collect_strings(event.get("blocks"), extra)
+    seen = set(parts)
+    for e in extra:
+        if e not in seen:
+            seen.add(e)
+            parts.append(e)
+    return "\n".join(parts)
+
+
 def _enrich_event(event: dict[str, Any]) -> dict[str, Any]:
     """Add channel_name + user_label fields to a raw Slack event using the
-    archive's channel cache + the persistent users cache."""
+    archive's channel cache + the persistent users cache, and flatten any
+    attachment/block text into `text` so rules + pet prompts can see it."""
+    flat = _flatten_text(event)
+    if flat:
+        event["text"] = flat
     cid = event.get("channel")
     if cid:
         try:
@@ -145,7 +191,9 @@ def _enrich_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _process_event(rules: RulesEngine, event: dict[str, Any]) -> None:
-    """Match + dispatch a single event. Synchronous; called from a thread."""
+    """Enrich, match + dispatch a single event. Synchronous; called from a thread so the
+    cache lookups and users.info calls never block the WS read loop."""
+    _enrich_event(event)
     matched = rules.match(event)
     if not matched:
         return
@@ -173,6 +221,8 @@ async def _ws_connect_loop(rules: RulesEngine) -> None:
     while _running:
         try:
             url = _build_ws_url()
+            # rules with ignore_self skip our own posts (a post_back rule would loop on itself)
+            rules.self_user_id = call("auth.test")["user_id"]
             env = _read_env()
             cookie_hdr = _build_cookie_header(env)
             extra_headers = {
@@ -221,7 +271,6 @@ async def _ws_connect_loop(rules: RulesEngine) -> None:
                         continue
                     if event.get("hidden"):
                         continue
-                    _enrich_event(event)
                     _actions_pool.submit(_process_event, rules, event)
         except SlackError as e:
             if "invalid_auth" in str(e):
@@ -250,6 +299,11 @@ def main() -> None:
     rules = RulesEngine()  # include_pets=True: merges pet specs with legacy rules
     rules.maybe_reload()
     log.info("supervisor up — initial rules: %d active (legacy + pets)", len(rules.rules))
+
+    # Start the bounded, priority-ordered pet scheduler (gates claude -p fan-out).
+    from ..pets.scheduler import get_scheduler
+
+    get_scheduler()
 
     try:
         asyncio.run(_ws_connect_loop(rules))

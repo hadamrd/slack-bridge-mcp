@@ -1,0 +1,176 @@
+{
+ "ts": "1790764391.748529",
+ "text": "",
+ "attachments": [
+  {
+   "id": 1,
+   "blocks": [
+    {
+     "type": "section",
+     "block_id": "v4#bcb05ff4-4317-485e-bb1b-162a6a36d5dc#d52a674e-7934-4cb6-94a8-19be3a46d30a#d7236034-da32-433e-ac39-941dd2d249f7#1171ee10-4fd5-4b92-9503-c47b61096bfe#0",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*<https://j.opsg.in/a/criteo/dac83ef6-c612-4168-a5db-8d14a8619f16-1790764390984|Alert #308370: gerrit-multisite-branches-misaligned-between-nodes>*",
+      "verbatim": false
+     }
+    },
+    {
+     "type": "actions",
+     "block_id": "v4#bcb05ff4-4317-485e-bb1b-162a6a36d5dc#d52a674e-7934-4cb6-94a8-19be3a46d30a#d7236034-da32-433e-ac39-941dd2d249f7#1171ee10-4fd5-4b92-9503-c47b61096bfe#1",
+     "elements": [
+      {
+       "type": "button",
+       "action_id": "unack",
+       "text": {
+        "type": "plain_text",
+        "text": "Unacknowledge",
+        "emoji": true
+       }
+      },
+      {
+       "type": "button",
+       "action_id": "close",
+       "text": {
+        "type": "plain_text",
+        "text": "Close",
+        "emoji": true
+       },
+       "style": "danger"
+      },
+      {
+       "type": "button",
+       "action_id": "jsm_slack_alert_oncall_add_note_button_popup",
+       "text": {
+        "type": "plain_text",
+        "text": "Add note",
+        "emoji": true
+       }
+      },
+      {
+       "type": "overflow",
+       "action_id": "jsm_alert_overflow",
+       "options": [
+        {
+         "text": {
+          "type": "plain_text",
+          "text": "Assign",
+          "emoji": true
+         },
+         "value": "jsm_slack_alert_oncall_assign_popup"
+        },
+        {
+         "text": {
+          "type": "plain_text",
+          "text": "Assign to me",
+          "emoji": true
+         },
+         "value": "own"
+        },
+        {
+         "text": {
+          "type": "plain_text",
+          "text": "Snooze",
+          "emoji": true
+         },
+         "value": "jsm_slack_alert_oncall_snooze_popup"
+        },
+        {
+         "text": {
+          "type": "plain_text",
+          "text": "Add tags",
+          "emoji": true
+         },
+         "value": "add_alert_tags_modal_open"
+        },
+        {
+         "text": {
+          "type": "plain_text",
+          "text": "Update priority",
+          "emoji": true
+         },
+         "value": "jsm_slack_alert_oncall_update_priority_popup"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "divider",
+     "block_id": "v4#bcb05ff4-4317-485e-bb1b-162a6a36d5dc#d52a674e-7934-4cb6-94a8-19be3a46d30a#d7236034-da32-433e-ac39-941dd2d249f7#1171ee10-4fd5-4b92-9503-c47b61096bfe#2"
+    },
+    {
+     "type": "section",
+     "block_id": "v4#bcb05ff4-4317-485e-bb1b-162a6a36d5dc#d52a674e-7934-4cb6-94a8-19be3a46d30a#d7236034-da32-433e-ac39-941dd2d249f7#1171ee10-4fd5-4b92-9503-c47b61096bfe#3",
+     "accessory": {
+      "type": "image",
+      "image_url": "https://resources.opsgenie.com/resources/images/chat/jsm-slack/alert/P3-priority.png",
+      "alt_text": "P3"
+     },
+     "fields": [
+      {
+       "type": "mrkdwn",
+       "text": ":white_check_mark: *Status*",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": "Acknowledged ",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": "\u200e ",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": " ",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": ":technologist: *Responders*",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": "PRE_Platform ",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": "\u200e ",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": " ",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": ":label: *Tags*",
+       "verbatim": false
+      },
+      {
+       "type": "mrkdwn",
+       "text": "`additional_notification_channel:codex-alerts` `additional_notification_frequency:once` `alertname:gerrit-multisite-branches-misaligned-bet` `app:gerrit` `app_owner:codex` `env:prod` `grafana_folder:Codex` `priority:P3` `severity:page` `team:PRE_Platform`  ",
+       "verbatim": false
+      }
+     ]
+    },
+    {
+     "type": "section",
+     "block_id": "v4#bcb05ff4-4317-485e-bb1b-162a6a36d5dc#d52a674e-7934-4cb6-94a8-19be3a46d30a#d7236034-da32-433e-ac39-941dd2d249f7#1171ee10-4fd5-4b92-9503-c47b61096bfe#4",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Description*\nA Gerrit node has had inconsistent branches for over 30 minutes. Check network connectivity between nodes and pull-replication logs.\nDocumentation: <https://criteo.atlassian.net/wiki/spaces/PREPLATFORM/pages/4028465446/Runbook+Gerrit+multi-site+split+brain>\n\n\n\nSources: <https://grafana.prod.crto.in/alerting/grafana/X-nmz48B5/view>",
+      "verbatim": false
+     }
+    }
+   ],
+   "color": "#0299fc",
+   "fallback": "Alert #308370: gerrit-multisite-branches-misaligned-between-nodes"
+  }
+ ]
+}

@@ -95,6 +95,7 @@ class _TokenBucket:
         self.last_refill = time.monotonic()
         self.recent_429 = 0
         self.last_429_at = 0.0
+        self.blocked_until = 0.0  # monotonic; nobody acquires before Slack's Retry-After ends
         self.calls_acquired = 0  # telemetry
         self.calls_throttled = 0
         self.calls_429 = 0
@@ -119,11 +120,12 @@ class _TokenBucket:
         while True:
             with self._lock:
                 self._refill_locked()
-                if self.tokens >= 1.0:
+                cooldown = self.blocked_until - time.monotonic()
+                if cooldown <= 0 and self.tokens >= 1.0:
                     self.tokens -= 1.0
                     self.calls_acquired += 1
                     return True
-                wait = (1.0 - self.tokens) / max(self.refill_per_sec, 0.001)
+                wait = max(cooldown, (1.0 - self.tokens) / max(self.refill_per_sec, 0.001))
             if time.monotonic() + wait > deadline:
                 self.calls_throttled += 1
                 return False
@@ -137,6 +139,7 @@ class _TokenBucket:
         with self._lock:
             self.recent_429 += 1
             self.last_429_at = time.monotonic()
+            self.blocked_until = max(self.blocked_until, self.last_429_at + retry_after_s)
             self.tokens = 0.0
             # Multiplicative shrink, floored.
             self.refill_per_sec = max(0.1, self.refill_per_sec * 0.5)

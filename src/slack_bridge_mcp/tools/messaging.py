@@ -15,6 +15,7 @@ from mcp.types import Tool
 
 from .. import caches
 from ..client import SlackError, call
+from ..rich_text import message_text, parse_alert
 
 TOOLS: list[Tool] = [
     Tool(
@@ -146,7 +147,8 @@ def _thread(
             {
                 "ts": m.get("ts"),
                 "user": m.get("user") or m.get("bot_id") or m.get("username"),
-                "text": m.get("text"),
+                "text": message_text(m),
+                "alert": parse_alert(m),
                 "reactions": [
                     {"name": r.get("name"), "count": r.get("count")}
                     for r in (m.get("reactions") or [])
@@ -199,7 +201,7 @@ def _find_conversation(query: str, limit: int) -> dict[str, Any]:
             {
                 "ts": m.get("ts"),
                 "user": m.get("user") or m.get("bot_id") or m.get("username"),
-                "text": m.get("text"),
+                "text": message_text(m),
                 "thread_ts": m.get("thread_ts"),
                 "reply_count": m.get("reply_count"),
             }

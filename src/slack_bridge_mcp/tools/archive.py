@@ -244,14 +244,16 @@ def _search(
 
     # --- COLD TIER (only if needed) ---
     cold_rows: list[dict[str, Any]] = []
+    # Cold is searched when the asked period overlaps what it holds, whatever the channel's
+    # polling checkpoint says (backfilled channels have none).
     cold_oldest = cold.horizon_oldest_ts()
-    last_ts: str | None = None
-    if cid:
-        last_ts = db.get_channel_last_ts(conn, cid)
+    cold_newest = cold.horizon_newest_ts() if cold_oldest is not None else None
     needs_cold = (
         cold_oldest is not None
+        and cold_newest is not None
         and len(hot_rows) < limit
-        and (since_ts is None or since_ts <= (last_ts or "0"))
+        and (since_ts is None or since_ts <= cold_newest)
+        and (until_ts is None or until_ts >= cold_oldest)
     )
     if needs_cold:
         # Cold has no FTS — use plain LIKE on `text`. Slower but bounded by
@@ -280,6 +282,10 @@ def _search(
             order_by="ts DESC",
             limit=limit - len(hot_rows),
         )
+        # a message edited or deleted during compaction is in both tiers: the hot copy is newer
+        cold_rows = [r for r in cold_rows if not conn.execute(
+            "SELECT 1 FROM messages WHERE channel_id=? AND ts=? LIMIT 1",
+            (r["channel_id"], r["ts"])).fetchone()]
 
     # Merge, sort, cap
     merged = hot_rows + cold_rows

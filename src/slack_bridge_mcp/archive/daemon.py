@@ -94,15 +94,27 @@ def _enumerate_channels(conn) -> list[tuple[str, bool]]:
     return out
 
 
+# channel -> (latest, max_seen): a catch-up cut short (page cap, API error) resumes below `latest`
+# on the next sweep. In memory only: after a restart the sweep starts again from the checkpoint,
+# which re-reads (ingest is idempotent) but skips nothing.
+_backlog: dict[str, tuple[str, str]] = {}
+
+
 def _sweep_channel(conn, channel_id: str) -> int:
-    """Catch up new messages since the channel checkpoint. Returns count."""
+    """Catch up new messages since the channel checkpoint. Returns count.
+
+    History comes newest first, so the checkpoint only moves once every page down to it was read."""
     last_ts = db.get_channel_last_ts(conn, channel_id) or "0"
+    latest, max_seen_ts = _backlog.get(channel_id, ("", last_ts))
     new = 0
     pages = 0
     cursor = ""
-    max_seen_ts = last_ts
+    min_seen_ts = ""
+    complete = False
     while pages < MAX_PAGES_PER_CHANNEL:
         params = {"channel": channel_id, "oldest": last_ts, "limit": 200}
+        if latest:
+            params["latest"] = latest
         if cursor:
             params["cursor"] = cursor
         try:
@@ -110,6 +122,8 @@ def _sweep_channel(conn, channel_id: str) -> int:
         except SlackError as e:
             if "invalid_auth" in str(e):
                 log.warning("invalid_auth on %s — skipping cycle", channel_id)
+                if min_seen_ts:
+                    _backlog[channel_id] = (min_seen_ts, max_seen_ts)
                 raise
             log.warning("history failed for %s: %s", channel_id, e)
             break
@@ -121,15 +135,23 @@ def _sweep_channel(conn, channel_id: str) -> int:
             event["channel"] = channel_id
             if ingest.ingest_event(conn, event, via="poll") == "inserted":
                 new += 1
-            if m.get("ts", "") > max_seen_ts:
-                max_seen_ts = m["ts"]
-        if not data.get("has_more"):
-            break
+            ts = m.get("ts", "")
+            if ts > max_seen_ts:
+                max_seen_ts = ts
+            if ts and (not min_seen_ts or ts < min_seen_ts):
+                min_seen_ts = ts
         cursor = (data.get("response_metadata") or {}).get("next_cursor") or ""
-        if not cursor:
+        if not data.get("has_more") or not cursor:
+            complete = True
             break
         pages += 1
-    db.update_channel_checkpoint(conn, channel_id, max_seen_ts if max_seen_ts != last_ts else None)
+    if complete:
+        _backlog.pop(channel_id, None)
+        db.update_channel_checkpoint(conn, channel_id, max_seen_ts if max_seen_ts != last_ts else None)
+    else:
+        if min_seen_ts:
+            _backlog[channel_id] = (min_seen_ts, max_seen_ts)
+        db.update_channel_checkpoint(conn, channel_id, None)
     return new
 
 

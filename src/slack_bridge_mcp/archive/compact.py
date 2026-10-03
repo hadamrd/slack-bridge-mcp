@@ -132,23 +132,31 @@ def compact(horizon_days: int = HOT_HORIZON_DAYS, dry_run: bool = False) -> dict
     # the FTS5 messages_ad trigger; bundling 50k rows into a single tx made
     # the watcher + sweeper + MCP all wait on the lock for >14 minutes. Smaller
     # txns release the lock between groups so concurrent writers can interleave.
-    deleted = 0
+    # Only messages unchanged since the snapshot are removed: an edit or delete that landed after
+    # the SELECT stays hot (with the history it supersedes) and is archived by the next run.
+    deleted = changed = 0
     for (_ym, cid), group_rows in groups.items():
-        ts_list = [r["ts"] for r in group_rows]
-        placeholders = ",".join("?" * len(ts_list))
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")  # holds off the watcher until the check + delete are done
         try:
-            cur = conn.execute(
-                f"DELETE FROM messages WHERE channel_id=? AND ts IN ({placeholders})",
-                [cid, *ts_list],
-            )
-            deleted += cur.rowcount
+            for r in group_rows:
+                cur = conn.execute(
+                    "SELECT 1 FROM messages WHERE msg_id=? AND superseded_by IS NULL AND deleted_at IS ?",
+                    (r["msg_id"], r["deleted_at"]),
+                ).fetchone()
+                if not cur:
+                    changed += 1
+                    continue
+                deleted += conn.execute(
+                    "DELETE FROM messages WHERE channel_id=? AND ts=? AND msg_id<=?",
+                    (cid, r["ts"], r["msg_id"]),
+                ).rowcount
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
 
-    log.info("deleted %d rows from hot SQLite (across %d txns)", deleted, len(groups))
+    log.info("deleted %d rows from hot SQLite (across %d txns); %d changed since the snapshot "
+             "and stay hot", deleted, len(groups), changed)
 
     # Phase 3: WAL checkpoint instead of VACUUM. Full VACUUM blocks all
     # writers for the duration of the file rebuild (~minutes for 100+ MB).
@@ -164,6 +172,7 @@ def compact(horizon_days: int = HOT_HORIZON_DAYS, dry_run: bool = False) -> dict
         "ok": True,
         "horizon_days": horizon_days,
         "moved": deleted,
+        "changed_during_compaction": changed,
         "groups": len(groups),
         "skipped_unparseable": skipped_unparseable,
         "hot_before": pre,

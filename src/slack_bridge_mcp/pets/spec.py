@@ -91,6 +91,7 @@ class BotSpec:
     trigger: dict[str, Any]
     ignore_self: bool
     rate_limit_per_min: int
+    priority: int
     # runtime
     model: str | None
     timeout_s: int
@@ -131,10 +132,9 @@ class BotSpec:
     def allowed_tools(self) -> list[str]:
         """The fully-qualified ``--allowedTools`` list for ``claude -p``."""
         tools: list[str] = list(self.extra_tools)
-        if self.can_write_memory and "Write" not in tools:
-            tools.append("Write")
-        if self.can_write_memory and "Edit" not in tools:
-            tools.append("Edit")
+        if self.can_write_memory:
+            # absolute-path rule ("//"): writes allowed only under this pet's memory/
+            tools += [f"Write(/{self.memory_dir}/**)", f"Edit(/{self.memory_dir}/**)"]
         for short in self.slack_tools:
             tools.append(SLACK_TOOL_PREFIX + short)
         # Allow every tool from each granted non-slack MCP server (wildcard).
@@ -211,6 +211,7 @@ def parse_spec(directory: Path, data: dict[str, Any]) -> BotSpec:
         trigger=dict(trigger),
         ignore_self=bool(data.get("ignore_self", True)),
         rate_limit_per_min=int(data.get("rate_limit_per_min", 0) or 0),
+        priority=int(data.get("priority", 0) or 0),
         model=runtime.get("model"),
         timeout_s=int(runtime.get("timeout_s", 180)),
         grounding_dirs=_as_list(runtime.get("grounding_dirs"), f"{name}: runtime.grounding_dirs"),
